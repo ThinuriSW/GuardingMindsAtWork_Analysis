@@ -12,7 +12,7 @@ This repository contains code, outputs, and data related to the analysis of work
 - Weighted regressions were performed using `svyglm` to account for survey design.
 - Psychological dimensions analyzed include Workload, Recognition, Psychological Protection, etc.
 - Analyses stratified by Union Status to examine differences between unionized and non-unionized employees.
-- Variables were coded consistently (e.g., female = 0, male/other = 1).
+
 
 ## Reproducibility
 1. Clone the repository:
