@@ -1,18 +1,16 @@
 # Guarding Minds at Work Analysis
-This repository contains code, outputs, and data related to the analysis of workplace psychological dimensions in the Guarding Minds at Work survey.
+This repository contains code and outputs related to the analysis of workplace psychological dimensions in the Guarding Minds at Work survey.
 
 ## Repository Contents
 - `GM@W_Code.Rmd` – R Markdown file with all analysis code.
 - `weighted_regression_cleaned.xlsx` – Weighted regression results.
 - `weighted_regression_heatmap.png` – Heatmap of regression estimates.
 - `weighted_ttests_by_union.xlsx` – T-tests comparing unionized vs non-unionized groups.
-- `Guarding minds 2023_weighted_15.6.2023.csv` – Anonymized raw dataset used.
 
 ## Analysis Overview
 - Weighted regressions were performed using `svyglm` to account for survey design.
 - Psychological dimensions analyzed include Workload, Recognition, Psychological Protection, etc.
 - Analyses stratified by Union Status to examine differences between unionized and non-unionized employees.
-
 
 ## Reproducibility
 1. Clone the repository:
