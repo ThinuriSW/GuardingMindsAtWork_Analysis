@@ -1,0 +1,349 @@
+```{r}
+#libraries and imports
+# Core
+library(dplyr)
+library(forcats)
+library(tidyr)
+
+# Survey analysis
+library(survey)
+library(broom)
+library(purrr)
+
+# Tables & export
+library(tableone)
+library(openxlsx)
+
+# Visualization
+library(ggplot2)
+```
+
+```{r}
+data <- read.csv("/home/rstudio/Guarding_Minds@Work/Guarding minds 2023_weighted_15.6.2023.csv")
+
+
+#reverse coding variables
+reverse_items <- c("Q6_2","Q7_2","Q41_2","Q44_2","Q48_2","Q49_2","Q50_2","Q51_2")
+
+data <- data %>%
+  mutate(across(all_of(reverse_items), ~ 6 - .x))
+
+
+#Psychosocial dimensions
+dimensions <- list(
+  Balance       = paste0("Q", 1:7, "_2"),
+  Civility      = paste0("Q", 8:11, "_2"),
+  Leadership    = paste0("Q", 12:17, "_2"),
+  Engagement    = paste0("Q", 18:19, "_2"),
+  Growth        = paste0("Q", 20:24, "_2"),
+  Influence     = paste0("Q", 25:29, "_2"),
+  OrgCulture    = paste0("Q", 30:32, "_2"),
+  Safety        = paste0("Q", 33:35, "_2"),
+  PsychSupport  = paste0("Q", 36:41, "_2"),
+  PsychDemands  = paste0("Q", 42:44, "_2"),
+  PsychProtection = paste0("Q", 45:51, "_2"),
+  Recognition   = paste0("Q", 52:54, "_2"),
+  Workload      = paste0("Q", 55:61, "_2")
+)
+
+for (d in names(dimensions)) {
+  data[[d]] <- rowMeans(data[, dimensions[[d]]], na.rm = TRUE)
+}
+
+
+#Recoding and Predictors
+data <- data %>%
+  mutate(
+    UnionStatus = factor(ifelse(SCR13 == 1, "Yes", "No"),
+                         levels = c("Yes","No"))
+  )
+
+predictors <- c("SCR7","AGEGROUP","SCR14","SCR12r1","SCR2","SCR15")
+
+
+#Cleaning and Sample size
+analysis_vars <- c(names(dimensions), predictors, "UnionStatus", "WT")
+
+data_clean <- data %>%
+  drop_na(all_of(analysis_vars))
+
+table(data_clean$UnionStatus)
+nrow(data_clean)
+
+
+#Survey design
+design <- svydesign(
+  ids = ~1,
+  weights = ~WT,
+  data = data_clean
+)
+
+```
+
+```{r}
+#Weighted Descriptive Statistics
+desc_vars <- predictors
+
+table1 <- CreateTableOne(
+  vars = desc_vars,
+  strata = "UnionStatus",
+  data = data_clean,
+  test = FALSE
+)
+
+print(table1, showAllLevels = TRUE)
+```
+```{r}
+#Weighted t-test (Union vs Non-Union)
+
+dimension_vars <- names(dimensions)
+weighted_results <- lapply(dimension_vars, function(dim) {
+  
+  means <- svyby(as.formula(paste("~", dim)), ~UnionStatus, design, svymean, na.rm = TRUE)
+  
+  mean_yes <- means[means$UnionStatus == "Yes", dim]
+  se_yes   <- means[means$UnionStatus == "Yes", "se"]
+  mean_no  <- means[means$UnionStatus == "No", dim]
+  se_no    <- means[means$UnionStatus == "No", "se"]
+  
+  # Compute 95% CI
+  ci_yes <- c(mean_yes - 1.96 * se_yes, mean_yes + 1.96 * se_yes)
+  ci_no  <- c(mean_no - 1.96 * se_no, mean_no + 1.96 * se_no)
+  
+  # Weighted t-test
+  tt <- svyttest(as.formula(paste(dim, "~ UnionStatus")), design)
+  
+  data.frame(
+    Dimension  = dim,
+    Mean_Yes   = round(mean_yes, 3),
+    SE_Yes     = round(se_yes, 3),
+    CI_Yes     = paste0("[", round(ci_yes[1],3), ", ", round(ci_yes[2],3), "]"),
+    N_Yes      = sum(!is.na(subset(data_clean, UnionStatus=="Yes")[[dim]])),
+    Mean_No    = round(mean_no, 3),
+    SE_No      = round(se_no, 3),
+    CI_No      = paste0("[", round(ci_no[1],3), ", ", round(ci_no[2],3), "]"),
+    N_No       = sum(!is.na(subset(data_clean, UnionStatus=="No")[[dim]])),
+    t_value    = round(tt$statistic, 3),
+    df         = round(tt$parameter, 1),
+    p_value    = signif(tt$p.value, 3)
+  )
+})
+
+#Bind all results
+final_weighted_table <- bind_rows(weighted_results)
+
+#Save to Excel
+write.xlsx(final_weighted_table, 
+           file = "weighted_ttests_by_union.xlsx", 
+           overwrite = TRUE)
+
+#Print table
+print(final_weighted_table)
+```
+
+```{r}
+#Weighted Regression
+
+predictors <- c("SCR7", "AGEGROUP", "SCR12r1", "SCR2", "SCR15")
+
+run_weighted_regressions <- function(design_obj, label) {
+  lapply(names(dimensions), function(dim_name) {
+    
+    # Build formula
+    f <- as.formula(paste(dim_name, "~", paste(predictors, collapse = " + ")))
+    
+    # Fit survey-weighted regression
+    model <- svyglm(f, design = design_obj)
+    
+    # Extract residual degrees of freedom
+    df_resid <- df.residual(model)
+    
+    # Tidy model with CI
+    broom::tidy(model, conf.int = TRUE) %>%
+      mutate(
+        Outcome     = dim_name,
+        UnionStatus = label,
+        t_value     = round(estimate / std.error, 3),
+        df_resid    = df_resid,
+        SigLevel    = case_when(
+          p.value < 0.001 ~ "***",
+          p.value < 0.01  ~ "**",
+          p.value < 0.05  ~ "*",
+          p.value < 0.1   ~ ".",
+          TRUE ~ ""
+        )
+      )
+  }) %>% bind_rows()
+}
+
+#Run regressions separately by UnionStatus
+res_union_yes <- run_weighted_regressions(subset(design_all, UnionStatus == "Yes"), "Unionized")
+res_union_no  <- run_weighted_regressions(subset(design_all, UnionStatus == "No"),  "Non-Unionized")
+
+#Combine results
+all_coefs <- bind_rows(res_union_yes, res_union_no)
+
+#Remove JobSector terms if any slipped through
+all_coefs_clean <- all_coefs %>%
+  filter(!grepl("^JobSector", term))
+
+#Relabel predictors for publication
+predictor_labels <- c(
+  SCR7     = "Employment Type",
+  AGEGROUP = "Age Categories",
+  SCR12r1  = "Access to Benefits / EAP",
+  SCR2     = "Gender Identity",
+  SCR15    = "Education Level"
+)
+
+# Export to Excel
+write.xlsx(
+  list(
+    Coefficients     = all_coefs_clean
+  ),
+  file = "weighted_regression_cleaned.xlsx",
+  overwrite = TRUE
+)
+
+# Preview
+head(all_coefs_clean)
+```
+
+```{r}
+# Weighted Regression Heatmap
+
+dimension_labels <- c(
+  Workload        = "Workload Management",
+  Recognition     = "Recognition and Reward",
+  PsychProtection = "Psychological Protection",
+  PsychDemands    = "Psychological Competencies and Demands",
+  PsychSupport    = "Psychological and Social Support",
+  Safety          = "Protection of Physical Safety",
+  OrgCulture      = "Organizational Culture",
+  Influence       = "Involvement and Influence",
+  Growth          = "Growth and Development",
+  Leadership      = "Clear Leadership and Expectations",
+  Civility        = "Civility and Respect"
+)
+
+# Prepare data for heatmap
+library(plyr)
+
+regression_plot_data_w <- regression_table_union_w %>%
+  filter(term %in% names(predictor_labels)) %>%
+  mutate(
+    # Map Outcome names safely
+    Outcome_label = mapvalues(
+      Outcome,
+      from = names(dimension_labels),
+      to   = dimension_labels,
+      warn_missing = FALSE
+    ),
+    term = factor(term, levels = names(predictor_labels)),
+    UnionStatus = factor(UnionStatus, levels = c("Unionized", "Non-Unionized"))
+  )
+
+# Plot heatmap
+heatmap_plot <- ggplot(
+  regression_plot_data_w,
+  aes(x = term, y = Outcome_label, fill = estimate)
+) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = SigLevel), size = 4) +
+  scale_fill_gradient2(
+    low = "#d73027",
+    mid = "white",
+    high = "#1a9850",
+    midpoint = 0,
+    name = "Estimate"
+  ) +
+  scale_x_discrete(labels = predictor_labels) +
+  facet_wrap(~ UnionStatus) +
+  labs(
+    title = "Weighted Predictor Effects Across Psychological Dimensions by Union Status",
+    x = "Predictor Variable",
+    y = "Psychological Dimension"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x  = element_text(size = 14, angle = 45, hjust = 1),
+    axis.text.y  = element_text(size = 14),
+    axis.title   = element_text(size = 16, face = "bold"),
+    plot.title   = element_text(size = 18, face = "bold"),
+    strip.text   = element_text(size = 15, face = "bold"),
+    legend.title = element_text(size = 14),
+    legend.text  = element_text(size = 13)
+  )
+
+# Print heatmap
+print(heatmap_plot)
+
+# Save heatmap
+ggsave(
+  filename = "weighted_regression_heatmap.png",
+  plot = heatmap_plot,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+```
+
+```{r}
+#Assumption checking 
+
+# Weighted linear model
+model_w <- lm(
+  Balance ~ SCR7 + AGEGROUP + SCR14 + SCR12r1 + SCR2 + SCR15 + UnionStatus,
+  data = data_clean,
+  weights = WT
+)
+
+# Model summary
+summary(model_w)
+
+#Residual diagnostics
+# 1. Residuals vs Fitted
+plot(model_w$fitted.values, resid(model_w),
+     main = "Weighted: Residuals vs Fitted",
+     xlab = "Weighted Fitted Values",
+     ylab = "Weighted Residuals")
+abline(h = 0, col = "red")
+
+# 2. Histogram of residuals
+hist(resid(model_w), breaks = 30,
+     main = "Weighted Residual Histogram",
+     xlab = "Residuals")
+
+# 3. Q-Q plot for normality
+qqnorm(resid(model_w))
+qqline(resid(model_w), col = "red")
+
+# 4. Homoscedasticity check (Residuals vs Fitted again)
+plot(model_w$fitted.values, resid(model_w),
+     main = "Weighted: Residuals vs Fitted (Homoscedasticity)",
+     xlab = "Weighted Fitted Values",
+     ylab = "Weighted Residuals")
+abline(h = 0, col = "red")
+
+# Multicollinearity check: VIF
+
+library(car)
+
+vif(model_w)
+
+# Survey-weighted linear model 
+library(survey)
+
+design <- svydesign(ids = ~1, data = data_clean, weights = ~WT)
+
+model_svy <- svyglm(
+  Balance ~ SCR7 + AGEGROUP + SCR14 + SCR12r1 + SCR2 + SCR15 + UnionStatus,
+  design = design
+)
+
+summary(model_svy)
+
+# VIF for survey-weighted model
+vif(model_svy)
+```
+
